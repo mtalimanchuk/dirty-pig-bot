@@ -1,6 +1,7 @@
 __pycache__
 .idea
 .vscode
+*.png
 config.py
 content
 photos

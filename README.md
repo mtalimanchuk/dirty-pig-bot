@@ -2,11 +2,6 @@
 Breathe life into your Telegram chat with /b-level content.
 
 Deployment:
-<br/>  Open 'token' and add your token received from @Botfather
-<br/>  Run collector.py to get fresh content, save it and create collections every 2 hours (by default).
-<br/>  /start your bot and send "!butthurt X" to stream butthurts every X minutes (don't add arguments to run once: "!butthurt")
-
-Dependencies:
-
-1. python-telegram-bot (v12 beta)
-2. requests
+<br/>  Create pig/config.py and add your TOKEN received from @Botfather, DEV_KWARGS = None for prod, WHITELIST = [user1id: int, user2_id: int ....]
+<br/>  Run collector.py to get fresh content, save it and create a collection.
+<br/>  /start your bot and send "/2ch" to get up-to-date butthurts
