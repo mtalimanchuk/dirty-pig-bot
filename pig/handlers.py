@@ -1,16 +1,12 @@
-import codecs
 from contextlib import wraps
 import datetime
-import json
-import itertools
 import logging
-import random
-import re
+import sqlite3
 
-from telegram.ext import CommandHandler, PrefixHandler
-from telegram.parsemode import ParseMode
+from telegram import ParseMode, InlineKeyboardButton, InlineKeyboardMarkup
 
-from config import WHITELIST
+from telegram.ext import CommandHandler, PrefixHandler, CallbackQueryHandler
+from pig.config import WHITELIST
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -18,20 +14,32 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _build_reply_markup(num, rating):
+    buttons = [
+        InlineKeyboardButton("👍", callback_data=f"{num}+1"),
+        InlineKeyboardButton(f"{rating:+}", callback_data=f"{num}+1"),
+        InlineKeyboardButton("👎", callback_data=f"{num}+-1"),
+    ]
+    return InlineKeyboardMarkup.from_row(buttons)
+
+
 def whitelist_only(func):
     @wraps(func)
     def wrapped(update, context, *args, **kwargs):
         user = update.effective_user
-        logger.info(f"@{user.username} ({user.id}) is trying to access a privileged command")
+        logger.info(
+            f"@{user.username} ({user.id}) is trying to access a privileged command"
+        )
         if user.id not in WHITELIST:
             logger.warning(f"Unauthorized access denied for {user.username}.")
             text = (
-                "�🚫 *ACCESS DENIED*"
+                "🚫 *ACCESS DENIED*\n"
                 "Sorry, you are *not authorized* to use this command"
             )
             update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
             return
         return func(update, context, *args, **kwargs)
+
     return wrapped
 
 
@@ -39,46 +47,38 @@ def start(update, context):
     logger.info(f"User @{update.message.from_user['username']} is now using the bot")
     context.bot.send_message(
         chat_id=update.message.chat_id,
-        text="*И СНОВА ЗДРАВСТВУЙТЕ*",
-        parse_mode=ParseMode.MARKDOWN,
+        text="И СНОВА ЗДРАВСТВУЙТЕ",
+        parse_mode=ParseMode.HTML,
     )
 
 
 def stream_collection(context):
-    filename = context.job.context['content_type']
-    with codecs.open(f"{filename}.collection", "r", encoding="cp1251") as collection_f:
-        collection = json.load(collection_f)
-        text = random.choice(list(itertools.chain.from_iterable(collection)))
-        formatted_text = re.sub(r"strong", "b", (re.sub(r"<.?br>", "\n", text)))
-
+    filename = context.job.context["content_type"]
     chat_id = context.job.context["chat_id"]
-    context.bot.send_message(chat_id, text=formatted_text, parse_mode=ParseMode.HTML)
+    text = "Move on, nothing here yet"
+    context.bot.send_message(chat_id, text=text, parse_mode=ParseMode.HTML)
 
 
 @whitelist_only
 def enable(update, context):
     logging.info(f"Dirty Pig is serving @{update.message.from_user['username']}")
-    with open("collection.json", "r", encoding="utf-8") as collection_f:
-        collection = json.load(collection_f)
-
     catalog = "b"
-    try:
-        random_butthurt = random.choice(collection)
-    except IndexError:
-        return
+    with sqlite3.connect("content/butthurts.db") as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM butthurt ORDER BY random() LIMIT 1")
+        random_butthurt = c.fetchone()
+        _, num, text, parent, rating = random_butthurt
+        butthurt_string = (
+            f"{text}\n"
+            f"{catalog}/<a href='https://2ch.hk/{catalog}/res/{parent}.html#{num}'>{parent}</a>"
+        )
 
-    formatted_comment = random_butthurt["formatted_comment"]
-    thread_num = random_butthurt["parent"]
-    butthurt_string = (
-        f"{formatted_comment}\n"
-        f"{catalog}/<a href='https://2ch.hk/{catalog}/res/{thread_num}.html'>{thread_num}</a>"
-    )
-    # collection.remove(random_butthurt)
     context.bot.send_message(
         chat_id=update.message.chat_id,
         text=butthurt_string,
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
+        reply_markup=_build_reply_markup(num, rating),
     )
 
 
@@ -104,6 +104,21 @@ def enable_content_streaming(update, context):
     context.chat_data["job"] = job
 
 
+@whitelist_only
+def update_rating(update, context):
+    query = update.callback_query
+    num, vote = [int(i) for i in query.data.split("+")]
+    if vote:
+        logger.info(f"{num} was voted {vote}")
+        with sqlite3.connect("content/butthurts.db") as conn:
+            c = conn.cursor()
+            c.execute("UPDATE butthurt SET rating = rating + ? WHERE num = ?;", (vote, num))
+            c.execute("SELECT rating FROM butthurt WHERE num = ?;", (num,))
+            rating = c.fetchone()[0]
+        query.answer()
+        query.edit_message_reply_markup(_build_reply_markup(num, rating))
+
+
 def error(update, context):
     logger.warning(f"Update {update} caused {context.error}")
 
@@ -118,3 +133,4 @@ content_streaming_handler = PrefixHandler(
     pass_chat_data=True,
     pass_job_queue=True,
 )
+rating_callback_handler = CallbackQueryHandler(update_rating)

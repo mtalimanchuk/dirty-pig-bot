@@ -75,17 +75,18 @@ def parse_catalog(board):
     df = pd.read_json(f"https://2ch.hk/{board}/threads.json")
     catalog_df = json_normalize(df['threads'])
 
-    logging.info(f"Received {len(catalog_df)} threads. Parsing each one...")
+    catalog_size = len(catalog_df)
+    logging.info(f"Received {catalog_size} threads. Parsing each one...")
     butthurts_collection = []
     with requests.Session() as session:
-        for thread_num in catalog_df['num']:
+        for i, thread_num in enumerate(catalog_df['num']):
+            print(f"\r{i+1}/{catalog_size}", end='', flush=True)
             butthurts_df = parse_thread(session, board, thread_num)
             if isinstance(butthurts_df, pd.DataFrame):
                 if not butthurts_df.empty:
                     butthurts_collection.append(butthurts_df)
 
     full_butthurts_df = pd.concat(butthurts_collection, ignore_index=True)
-    # print(full_butthurts_df)
     collection_df = full_butthurts_df[['num', 'formatted_comment', 'parent']]
     collection_df.loc[(collection_df['parent'] == '0'), 'parent'] = collection_df.loc[(collection_df['parent'] == '0'), 'num']
     collection_df['rating'] = 0
@@ -101,7 +102,6 @@ if __name__ == "__main__":
     catalog = 'b'
     collection = parse_catalog(catalog)
     with sqlite3.connect("content/butthurts.db") as con:
-        # create = "CREATE TABLE IF NOT EXISTS butthurt (id INTEGER PRIMARY KEY AUTOINCREMENT, formatted_text TEXT, parent INTEGER, rating INTEGER);"
-        # con.execute(create)
         collection.to_sql('butthurt', con, if_exists='replace')
+        # TODO use sqlite queries to update the table instead of replacing it
     print(collection)
