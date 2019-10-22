@@ -2,6 +2,6 @@ __pycache__
 .idea
 .vscode
 *.png
-config.py
+pig/config.py
 content
 photos
