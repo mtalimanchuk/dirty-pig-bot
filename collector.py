@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 
-from datetime import datetime, timedelta
-import json
-from operator import itemgetter
 import logging
 from pathlib import Path
-from textwrap import shorten
-from time import sleep
-
 import requests
+import sqlite3
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.WARNING)
+import pandas as pd
+from pandas.io.json import json_normalize
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 HEADERS = {'User-agent': 'Mozilla/5.0 (Windows NT 6.1; rv:52.0) Gecko/20100101 Firefox/52.0'}
@@ -18,121 +16,92 @@ HEADERS = {'User-agent': 'Mozilla/5.0 (Windows NT 6.1; rv:52.0) Gecko/20100101 F
 DVACH_CONTENT_DIR = Path('content/2ch')
 DVACH_CONTENT_DIR.mkdir(parents=True, exist_ok=True)
 
-
-def get_threads(session, board, sort_by):
-    print(f"Parsing {board}/")
-    r = session.get(f"https://2ch.hk/{board}/threads.json")
-    threads = r.json()['threads']
-    print(f"Found {len(threads)} threads in {board}/")
-
-    return sorted(threads, key=itemgetter(sort_by), reverse=True)
+pd.set_option('display.max_rows', 500)
+pd.set_option('display.max_columns', 500)
+pd.set_option('display.width', 100)
+pd.set_option('display.max_colwidth', 100)
 
 
-def get_thread_content(session, board, thread_num):
-    url = f"https://2ch.hk/{board}/res/{thread_num}.json"
-    r = session.get(url)
+def _identify_butthurts(thread_df, caps_ratio_benchmark=0.5):
 
-    return r.json()
+    tag_replacements = [
+        ("em>", "i>"),
+        (r'strong>', 'b>'),
+        ('<br>', '\n'),
+        (r'<a href="(?!http)(?=\/)', '<a href="https://2ch.hk'),
+        (r'span.*?>', 'i>'),
+        (r" class=.*?\">>>", '>>>'),
+    ]
+
+    thread_df['formatted_comment'] = thread_df['comment']
+    for initial_tag, corrected_tag in tag_replacements:
+        thread_df['formatted_comment'] = thread_df['formatted_comment'].str.replace(initial_tag, corrected_tag)
+
+    tag_replacements = [
+        (r"<.*?>", ""),
+        ("\n", ""),
+        ("&gt;", ""),
+    ]
+
+    thread_df['comment_text'] = thread_df['formatted_comment']
+    for initial_tag, corrected_tag in tag_replacements:
+        thread_df['comment_text'] = thread_df['comment_text'].str.replace(initial_tag, corrected_tag)
+
+    thread_df['has_butthurt_pattern'] = thread_df['comment_text'].str.contains('@')
+    caps_letters = thread_df['comment_text'].str.count(r'[A-ZА-Я]')
+    total_letters = thread_df['comment_text'].str.count(r'[a-zа-яA-ZА-Я]')
+    thread_df['caps_ratio'] = caps_letters / total_letters
+    possible_butthurts_df = thread_df[(thread_df['caps_ratio'] > caps_ratio_benchmark) &
+                                      (thread_df['has_butthurt_pattern'])]
+
+    return possible_butthurts_df
 
 
-def search_content(thread_json):
-
-    def search_butthurt(posts):
-        butthurt_posts = []
-        for post in posts:
-            is_caps = len([c for c in post['comment'] if c.isupper()]) > len([c for c in post['comment'] if c.islower()])
-            is_butthurt = is_caps and '@' in post['comment']
-            if is_butthurt:
-                butthurt_posts.append(post['comment'])
-
-        return butthurt_posts
-
-    def search_ylyl(title, posts):
-        # not implemented yet
+def parse_thread(session, board, thread_num):
+    try:
+        r = session.get(f"https://2ch.hk/{board}/res/{thread_num}.json")
+        posts = r.json()['threads'][0]['posts']
+    except Exception as e:
+        print(f"Error {type(e)} when parsing response")
         return None
 
-    num = thread_json['current_thread']
-    title = thread_json['title']
-    posts = thread_json['threads'][0]['posts']
+    posts_df = pd.DataFrame(posts)
 
-    content = {'thread_num': num,
-               'butthurt': search_butthurt(posts),
-               'ylyl': search_ylyl(title, posts)}
-
-    return content
+    return _identify_butthurts(posts_df)
 
 
-def create_collection(content_type):
-    content_dir = DVACH_CONTENT_DIR
-    collection = []
-    for tome in content_dir.iterdir():
-        for json_file_path in tome.rglob('[0-9]*.json'):
-            with open(json_file_path, 'r', encoding='utf-8') as f:
-                thread_json = json.load(f)
-            content = search_content(thread_json)
-            if content[content_type] and content[content_type] not in collection:
-                collection.append(content[content_type])
+def parse_catalog(board):
+    logging.info(f"Parsing {board}/")
+    df = pd.read_json(f"https://2ch.hk/{board}/threads.json")
+    catalog_df = json_normalize(df['threads'])
 
-    with open(f"{content_type}.collection", 'w', encoding='utf-8') as collection_f:
-        json.dump(collection, collection_f)
-        print(f'New {content_type}.collection created with {len(collection)} entries')
+    logging.info(f"Received {len(catalog_df)} threads. Parsing each one...")
+    butthurts_collection = []
+    with requests.Session() as session:
+        for thread_num in catalog_df['num']:
+            butthurts_df = parse_thread(session, board, thread_num)
+            if isinstance(butthurts_df, pd.DataFrame):
+                if not butthurts_df.empty:
+                    butthurts_collection.append(butthurts_df)
 
-    return collection
+    full_butthurts_df = pd.concat(butthurts_collection, ignore_index=True)
+    # print(full_butthurts_df)
+    collection_df = full_butthurts_df[['num', 'formatted_comment', 'parent']]
+    collection_df.loc[(collection_df['parent'] == '0'), 'parent'] = collection_df.loc[(collection_df['parent'] == '0'), 'num']
+    collection_df['rating'] = 0
+    logging.info(f"Done parsing")
 
+    # current_collection_path = DVACH_CONTENT_DIR / 'butthurts.csv'
+    # logging.info(f"Saved to {current_collection_path}")
 
-def run_parser(board='b', sort_by='posts_count', save_top=10):
-    try:
-        session = requests.Session()
-        session.headers.update(HEADERS)
-        now = datetime.strftime(datetime.now(), '%d-%m-%y_%H-%M-%S')
-        current_writing_dir = DVACH_CONTENT_DIR / now
-        current_writing_dir.mkdir(parents=True, exist_ok=True)
-        logging.info(f"Running parser. Current writing directory {current_writing_dir} created successfully")
-
-        threads = get_threads(session, board, sort_by)
-        with open(current_writing_dir / "threads.json", 'w', encoding='utf-8') as thread_list_file:
-            json.dump(threads, thread_list_file)
-
-        for thread in threads[:save_top]:
-            comment_view = shorten(thread['comment'], width=200, placeholder='...')
-            print(f"#{thread['num']}: {thread['subject']} | {thread['posts_count']} posts\n"
-                  f"{comment_view}\n")
-
-            thread_content = get_thread_content(session, board, thread['num'])
-            with open(current_writing_dir / f"{thread['num']}.json", 'w', encoding='utf-8') as thread_content_file:
-                json.dump(thread_content, thread_content_file)
-
-        print(f"Done parsing {board}. Saved {save_top} threads to {current_writing_dir}.\n"
-              f"Closing session.\n"
-              f"Updating collections...")
-
-        create_collection('butthurt')
-
-    except Exception as e:
-        logging.warning(f"{type(e)}: {e}")
+    return collection_df
 
 
-def idle(hours, minutes, seconds):
-    last_parser_run = datetime.now()
-    time_left = timedelta(hours=hours, minutes=minutes, seconds=seconds)
-    next_parser_run = last_parser_run + time_left
-
-    while time_left.total_seconds() > 0:
-        _seconds_left = time_left.total_seconds()
-        _hours, _remainder = divmod(_seconds_left, 3600)
-        _minutes, _seconds = divmod(_remainder, 60)
-
-        timer_string = f"{int(_minutes + _hours*60):02d}:{int(_seconds):02d}"
-        print(f"\rIdling... Next parsing run in {timer_string}", sep=' ', end='', flush=True)
-        sleep(1)
-        time_left = next_parser_run - datetime.now()
-    print(f"\rEnd idling\n{'*' * 40}")
-
-
-''' Main loop'''
-while True:
-    try:
-        run_parser(board='b', sort_by='posts_count', save_top=10)
-        idle(2, 0, 0)
-    except KeyboardInterrupt:
-        break
+if __name__ == "__main__":
+    catalog = 'b'
+    collection = parse_catalog(catalog)
+    with sqlite3.connect("content/butthurts.db") as con:
+        # create = "CREATE TABLE IF NOT EXISTS butthurt (id INTEGER PRIMARY KEY AUTOINCREMENT, formatted_text TEXT, parent INTEGER, rating INTEGER);"
+        # con.execute(create)
+        collection.to_sql('butthurt', con, if_exists='replace')
+    print(collection)
