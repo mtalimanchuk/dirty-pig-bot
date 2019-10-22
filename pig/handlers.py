@@ -9,7 +9,9 @@ from telegram.ext import CommandHandler, PrefixHandler, CallbackQueryHandler
 from pig.config import WHITELIST
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+    filename=f"{__name__}.log",
 )
 logger = logging.getLogger(__name__)
 
