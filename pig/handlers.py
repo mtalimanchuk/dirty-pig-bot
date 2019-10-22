@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 
 def _build_reply_markup(num, rating):
     buttons = [
-        InlineKeyboardButton("👍", callback_data=f"{num}+1"),
-        InlineKeyboardButton(f"{rating:+}", callback_data=f"{num}+1"),
         InlineKeyboardButton("👎", callback_data=f"{num}+-1"),
+        InlineKeyboardButton(f"{rating:+}", callback_data=f"{num}+1"),
+        InlineKeyboardButton("👍", callback_data=f"{num}+1"),
     ]
     return InlineKeyboardMarkup.from_row(buttons)
 
